@@ -1,0 +1,56 @@
+# ──────────────────────────────────────────────
+# Experiment configuration — BDH chess model v2
+# Iterative value refinement with synaptic scratchpad
+# ──────────────────────────────────────────────
+# GPU: NVIDIA RTX 2060 (6 GB VRAM)
+
+experiment:
+  name: "bdh-chess-v2"
+  seed: 42
+
+wandb:
+  enabled: false
+  project: "bdh-searchless-chess"
+  tags: ["bdh", "iterative", "gpu"]
+
+data:
+  hf_dataset: "mateuszgrzyb/lichess-stockfish-normalized"
+  output_dir: "data/processed"
+  num_samples: 500000        # 500k positions
+  train_ratio: 0.80
+  val_ratio: 0.10
+  test_ratio: 0.10
+  cp_scale: 10000.0
+  batch_size: 256
+  num_workers: 0             # 0 for Windows compatibility
+
+model:
+  architecture: "bdh"
+  n_embd: 128
+  n_head: 4
+  n_neurons_mult: 8          # N = 8*128/4 = 256 per head, 1024 total
+  thinking_steps: 8           # K internal refinement steps
+  dropout: 0.1
+  init_damping: 0.9
+  deep_supervision: true
+  deep_sup_weight: 0.1
+  stability_weight: 0.01
+
+training:
+  epochs: 20
+  learning_rate: 0.0005
+  min_learning_rate: 0.000001
+  weight_decay: 0.0001
+  clipnorm: 1.0
+  mixed_precision: true      # AMP fp16 for speed + memory
+  warmup_epochs: 2
+  save_every_epochs: 5
+  early_stopping:
+    patience: 7
+    min_delta: 0.00001
+
+evaluation:
+  puzzle_path: "data/puzzles/test_puzzles.feather"
+
+output:
+  dir: "outputs/bdh-chess-v2"
