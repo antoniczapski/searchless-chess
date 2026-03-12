@@ -67,17 +67,35 @@ def download_and_prepare(
     total = len(ds)
     logger.info(f"Processing {total} positions...")
 
-    # Pre-allocate arrays to avoid OOM from Python list overhead.
-    # We allocate for the full dataset size; actual count may be slightly less
-    # due to skipped rows (NaN/missing scores).
-    boards_arr = np.zeros((total, 8, 8, 12), dtype=np.float32)
-    scores_arr = np.zeros(total, dtype=np.float32)
-    valid_count = 0
+    # Memory-efficient: encode in chunks and write intermediate files to disk,
+    # then concatenate. This avoids holding all 50M encoded positions in RAM
+    # alongside the HuggingFace dataset simultaneously.
+    CHUNK_SIZE = 5_000_000  # 5M positions per chunk (~9.2 GB per chunk)
+    chunk_dir = output_path / "_chunks"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+
+    chunk_boards = np.zeros((CHUNK_SIZE, 8, 8, 12), dtype=np.float32)
+    chunk_scores = np.zeros(CHUNK_SIZE, dtype=np.float32)
+    chunk_idx = 0  # position within current chunk
+    chunk_num = 0  # chunk file counter
+    total_valid = 0
     skipped = 0
+    chunk_files = []
+
+    def _flush_chunk():
+        nonlocal chunk_idx, chunk_num
+        if chunk_idx == 0:
+            return
+        path = chunk_dir / f"chunk_{chunk_num:03d}.npz"
+        np.savez(path, boards=chunk_boards[:chunk_idx], scores=chunk_scores[:chunk_idx])
+        chunk_files.append((str(path), chunk_idx))
+        logger.info(f"  Flushed chunk {chunk_num}: {chunk_idx} samples -> {path}")
+        chunk_num += 1
+        chunk_idx = 0
 
     for i, row in enumerate(ds):
         if i % 500_000 == 0 and i > 0:
-            logger.info(f"  Encoded {i}/{total} positions... ({valid_count} valid, {skipped} skipped)")
+            logger.info(f"  Encoded {i}/{total} positions... ({total_valid} valid, {skipped} skipped)")
 
         fen = row["fen"]
         cp = row.get("cp")
@@ -96,15 +114,39 @@ def download_and_prepare(
             skipped += 1
             continue
 
-        boards_arr[valid_count] = fen_to_tensor(fen, always_white_perspective=True)
-        scores_arr[valid_count] = normalize_cp(raw_cp, scale=cp_scale)
-        valid_count += 1
+        chunk_boards[chunk_idx] = fen_to_tensor(fen, always_white_perspective=True)
+        chunk_scores[chunk_idx] = normalize_cp(raw_cp, scale=cp_scale)
+        chunk_idx += 1
+        total_valid += 1
 
-    logger.info(f"Encoded {valid_count} positions ({skipped} skipped).")
+        if chunk_idx >= CHUNK_SIZE:
+            _flush_chunk()
 
-    # Trim to actual valid count
-    boards_arr = boards_arr[:valid_count]
-    scores_arr = scores_arr[:valid_count]
+    # Flush remaining
+    _flush_chunk()
+
+    # Free the HF dataset from memory before loading chunks
+    del ds
+    import gc
+    gc.collect()
+
+    logger.info(f"Encoded {total_valid} positions ({skipped} skipped) in {len(chunk_files)} chunks.")
+    logger.info("Loading chunks and concatenating...")
+
+    # Load all chunks and concatenate
+    all_boards = []
+    all_scores = []
+    for path, size in chunk_files:
+        data = np.load(path)
+        all_boards.append(data["boards"])
+        all_scores.append(data["scores"])
+
+    boards_arr = np.concatenate(all_boards, axis=0)
+    scores_arr = np.concatenate(all_scores, axis=0)
+    del all_boards, all_scores
+    gc.collect()
+
+    logger.info(f"Total: {len(boards_arr)} positions loaded.")
 
     # Deterministic shuffle + split
     rng = np.random.default_rng(seed)
@@ -131,6 +173,11 @@ def download_and_prepare(
         logger.info(f"  ✓ Saved {name}")
 
     split_info_path.write_text(json.dumps(info, indent=2))
+
+    # Clean up chunk files
+    import shutil
+    shutil.rmtree(chunk_dir, ignore_errors=True)
+
     logger.success(f"Data preparation complete. Info saved to {split_info_path}")
     return info
 
