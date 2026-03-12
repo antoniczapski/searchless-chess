@@ -67,14 +67,17 @@ def download_and_prepare(
     total = len(ds)
     logger.info(f"Processing {total} positions...")
 
-    # Encode all positions
-    boards = []
-    scores = []
+    # Pre-allocate arrays to avoid OOM from Python list overhead.
+    # We allocate for the full dataset size; actual count may be slightly less
+    # due to skipped rows (NaN/missing scores).
+    boards_arr = np.zeros((total, 8, 8, 12), dtype=np.float32)
+    scores_arr = np.zeros(total, dtype=np.float32)
+    valid_count = 0
     skipped = 0
 
     for i, row in enumerate(ds):
-        if i % 100_000 == 0 and i > 0:
-            logger.info(f"  Encoded {i}/{total} positions...")
+        if i % 500_000 == 0 and i > 0:
+            logger.info(f"  Encoded {i}/{total} positions... ({valid_count} valid, {skipped} skipped)")
 
         fen = row["fen"]
         cp = row.get("cp")
@@ -93,16 +96,15 @@ def download_and_prepare(
             skipped += 1
             continue
 
-        board_tensor = fen_to_tensor(fen, always_white_perspective=True)
-        score = normalize_cp(raw_cp, scale=cp_scale)
+        boards_arr[valid_count] = fen_to_tensor(fen, always_white_perspective=True)
+        scores_arr[valid_count] = normalize_cp(raw_cp, scale=cp_scale)
+        valid_count += 1
 
-        boards.append(board_tensor)
-        scores.append(score)
+    logger.info(f"Encoded {valid_count} positions ({skipped} skipped).")
 
-    logger.info(f"Encoded {len(boards)} positions ({skipped} skipped).")
-
-    boards_arr = np.array(boards, dtype=np.float32)
-    scores_arr = np.array(scores, dtype=np.float32)
+    # Trim to actual valid count
+    boards_arr = boards_arr[:valid_count]
+    scores_arr = scores_arr[:valid_count]
 
     # Deterministic shuffle + split
     rng = np.random.default_rng(seed)
@@ -123,9 +125,10 @@ def download_and_prepare(
     info = {"seed": seed, "total": n, "splits": {}}
     for name, (b, s) in splits.items():
         path = output_path / f"{name}.npz"
-        np.savez_compressed(path, boards=b, scores=s)
+        logger.info(f"  Saving {name}: {len(b)} samples -> {path} ...")
+        np.savez(path, boards=b, scores=s)
         info["splits"][name] = {"size": len(b), "path": str(path)}
-        logger.info(f"  Saved {name}: {len(b)} samples -> {path}")
+        logger.info(f"  ✓ Saved {name}")
 
     split_info_path.write_text(json.dumps(info, indent=2))
     logger.success(f"Data preparation complete. Info saved to {split_info_path}")
