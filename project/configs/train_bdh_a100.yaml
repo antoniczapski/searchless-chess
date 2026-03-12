@@ -15,7 +15,7 @@ wandb:
 
 data:
   hf_dataset: "mateuszgrzyb/lichess-stockfish-normalized"
-  output_dir: "data/processed"
+  output_dir: "/net/tscratch/people/plgantoniczapski/bdh-chess-data"
   num_samples: 50000000       # 50M positions
   train_ratio: 0.90
   val_ratio: 0.05
@@ -44,7 +44,7 @@ training:
   clipnorm: 1.0
   mixed_precision: true
   warmup_epochs: 3
-  save_every_epochs: 5
+  save_every_epochs: 3
   early_stopping:
     patience: 10
     min_delta: 0.00001
@@ -53,4 +53,4 @@ evaluation:
   puzzle_path: "data/puzzles/test_puzzles.feather"
 
 output:
-  dir: "outputs/bdh-chess-v3-a100"
+  dir: "/net/tscratch/people/plgantoniczapski/bdh-chess-outputs/bdh-chess-v3-a100"

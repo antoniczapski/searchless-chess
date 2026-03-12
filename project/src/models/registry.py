@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Model registry — factory for creating models by name from config."""
 
 import torch.nn as nn

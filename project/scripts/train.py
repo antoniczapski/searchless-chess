@@ -23,6 +23,11 @@ from src.training.trainer import Trainer
 def main():
     parser = argparse.ArgumentParser(description="Train chess evaluation model")
     parser.add_argument("--config", type=str, required=True, help="Path to YAML config")
+    parser.add_argument(
+        "--resume", type=str, nargs="?", const="auto",
+        help="Resume from checkpoint. 'auto' (default if flag given) finds latest_checkpoint.pt "
+             "in the output dir. Or provide an explicit path to a .pt file.",
+    )
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -52,9 +57,22 @@ def main():
     model = create_model(config["model"])
     logger.info(f"Parameters: {count_parameters(model):,}")
 
-    # Train
+    # Train (with optional resume)
     trainer = Trainer(model, config, output_dir=config["output"]["dir"])
-    result = trainer.fit(loaders["train"], loaders["val"])
+
+    start_epoch = 1
+    if args.resume:
+        if args.resume == "auto":
+            ckpt_path = Path(config["output"]["dir"]) / "checkpoints" / "latest_checkpoint.pt"
+        else:
+            ckpt_path = Path(args.resume)
+
+        if ckpt_path.exists():
+            start_epoch = trainer.resume_from_checkpoint(str(ckpt_path))
+        else:
+            logger.warning(f"No checkpoint found at {ckpt_path} — starting from scratch")
+
+    result = trainer.fit(loaders["train"], loaders["val"], start_epoch=start_epoch)
 
     logger.success(
         f"Training complete — best val_loss={result['best_val_loss']:.6f} "

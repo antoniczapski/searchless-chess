@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Simple MLP baseline for chess position evaluation.
 
 Used as a sanity-check baseline to validate the full pipeline.

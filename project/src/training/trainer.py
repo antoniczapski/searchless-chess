@@ -1,5 +1,7 @@
+from __future__ import annotations
 """Reusable, config-driven training loop with W&B logging and checkpointing."""
 
+import signal
 import time
 from pathlib import Path
 
@@ -102,12 +104,43 @@ class Trainer:
         n_params = count_parameters(self.model)
         logger.info(f"Model: {config['model']['architecture']} | {n_params:,} params | Device: {self.device}")
 
-    def fit(self, train_loader, val_loader) -> dict:
+    def resume_from_checkpoint(self, checkpoint_path: str) -> int:
+        """Load training state from a checkpoint for resumption.
+
+        Call this BEFORE fit(). It restores model, optimizer, early-stopping
+        state, and history. The scheduler and scaler states are restored
+        inside fit() after the scheduler is built.
+
+        Args:
+            checkpoint_path: Path to the checkpoint .pt file.
+
+        Returns:
+            The epoch number to resume from (next epoch to train).
+        """
+        ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        self.model.load_state_dict(ckpt["model_state_dict"])
+        self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        self.best_val_loss = ckpt.get("best_val_loss", ckpt.get("val_loss", float("inf")))
+        self._es_counter = ckpt.get("es_counter", 0)
+        self._es_best = ckpt.get("es_best", self.best_val_loss)
+        self.history = ckpt.get("history", [])
+        self._resume_scheduler_state = ckpt.get("scheduler_state_dict", None)
+        self._resume_scaler_state = ckpt.get("scaler_state_dict", None)
+        resume_epoch = ckpt["epoch"] + 1
+        logger.info(
+            f"Resumed from checkpoint: {checkpoint_path} "
+            f"(epoch {ckpt['epoch']}, val_loss={ckpt['val_loss']:.6f}, "
+            f"best_val_loss={self.best_val_loss:.6f})"
+        )
+        return resume_epoch
+
+    def fit(self, train_loader, val_loader, start_epoch: int = 1) -> dict:
         """Run the full training loop.
 
         Args:
             train_loader: Training DataLoader.
             val_loader: Validation DataLoader.
+            start_epoch: Epoch to start from (>1 when resuming).
 
         Returns:
             Dict with training history and best metrics.
@@ -130,55 +163,98 @@ class Trainer:
             milestones=[warmup_steps],
         )
 
-        logger.info(f"Training for {self.epochs} epochs ({steps_per_epoch} steps/epoch)")
+        # Restore scheduler / scaler state if resuming
+        if hasattr(self, "_resume_scheduler_state") and self._resume_scheduler_state is not None:
+            self.scheduler.load_state_dict(self._resume_scheduler_state)
+            logger.info("Restored scheduler state from checkpoint")
+            self._resume_scheduler_state = None
+        if hasattr(self, "_resume_scaler_state") and self._resume_scaler_state is not None:
+            self.scaler.load_state_dict(self._resume_scaler_state)
+            logger.info("Restored scaler state from checkpoint")
+            self._resume_scaler_state = None
 
-        for epoch in range(1, self.epochs + 1):
-            t0 = time.time()
+        logger.info(
+            f"Training for {self.epochs} epochs ({steps_per_epoch} steps/epoch)"
+            + (f" — resuming from epoch {start_epoch}" if start_epoch > 1 else "")
+        )
 
-            train_loss, train_mae = self._train_one_epoch(train_loader)
-            val_loss, val_mae = self._validate(val_loader)
+        # Graceful interrupt handling (Ctrl+C or SLURM SIGINT)
+        self._interrupted = False
+        original_sigint = signal.getsignal(signal.SIGINT)
 
-            elapsed = time.time() - t0
-            lr_now = self.optimizer.param_groups[0]["lr"]
-
-            record = {
-                "epoch": epoch,
-                "train_loss": train_loss,
-                "train_mae": train_mae,
-                "val_loss": val_loss,
-                "val_mae": val_mae,
-                "lr": lr_now,
-                "time_s": elapsed,
-            }
-            self.history.append(record)
-
-            logger.info(
-                f"Epoch {epoch:3d}/{self.epochs} | "
-                f"train_loss={train_loss:.6f} train_mae={train_mae:.4f} | "
-                f"val_loss={val_loss:.6f} val_mae={val_mae:.4f} | "
-                f"lr={lr_now:.2e} | {elapsed:.1f}s"
+        def _handle_interrupt(signum, frame):
+            if self._interrupted:
+                # Second interrupt — abort immediately
+                logger.error("Second interrupt received — aborting without saving!")
+                raise KeyboardInterrupt
+            self._interrupted = True
+            logger.warning(
+                "Interrupt received — will save checkpoint after current epoch finishes. "
+                "Press Ctrl+C again to abort immediately."
             )
 
-            # W&B log
-            if self.wandb_run:
-                import wandb
-                wandb.log(record, step=epoch)
+        signal.signal(signal.SIGINT, _handle_interrupt)
 
-            # Checkpoint: best model
-            if val_loss < self.best_val_loss:
-                self.best_val_loss = val_loss
-                self._save_checkpoint("best_model.pt", epoch, val_loss)
-                logger.info(f"  ✓ New best model (val_loss={val_loss:.6f})")
+        try:
+            for epoch in range(start_epoch, self.epochs + 1):
+                t0 = time.time()
 
-            # Checkpoint: periodic
-            save_every = self.config["training"].get("save_every_epochs", 10)
-            if epoch % save_every == 0:
-                self._save_checkpoint(f"epoch_{epoch:03d}.pt", epoch, val_loss)
+                train_loss, train_mae = self._train_one_epoch(train_loader)
+                val_loss, val_mae = self._validate(val_loader)
 
-            # Early stopping
-            if self._check_early_stopping(val_loss):
-                logger.warning(f"Early stopping at epoch {epoch} (patience={self.es_patience})")
-                break
+                elapsed = time.time() - t0
+                lr_now = self.optimizer.param_groups[0]["lr"]
+
+                record = {
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    "train_mae": train_mae,
+                    "val_loss": val_loss,
+                    "val_mae": val_mae,
+                    "lr": lr_now,
+                    "time_s": elapsed,
+                }
+                self.history.append(record)
+
+                logger.info(
+                    f"Epoch {epoch:3d}/{self.epochs} | "
+                    f"train_loss={train_loss:.6f} train_mae={train_mae:.4f} | "
+                    f"val_loss={val_loss:.6f} val_mae={val_mae:.4f} | "
+                    f"lr={lr_now:.2e} | {elapsed:.1f}s"
+                )
+
+                # W&B log
+                if self.wandb_run:
+                    import wandb
+                    wandb.log(record, step=epoch)
+
+                # Checkpoint: best model
+                if val_loss < self.best_val_loss:
+                    self.best_val_loss = val_loss
+                    self._save_checkpoint("best_model.pt", epoch, val_loss)
+                    logger.info(f"  ✓ New best model (val_loss={val_loss:.6f})")
+
+                # Checkpoint: periodic
+                save_every = self.config["training"].get("save_every_epochs", 10)
+                if epoch % save_every == 0:
+                    self._save_checkpoint(f"epoch_{epoch:03d}.pt", epoch, val_loss)
+
+                # Checkpoint: latest (always, for resume support)
+                self._save_checkpoint("latest_checkpoint.pt", epoch, val_loss)
+
+                # Early stopping
+                if self._check_early_stopping(val_loss):
+                    logger.warning(f"Early stopping at epoch {epoch} (patience={self.es_patience})")
+                    break
+
+                # Check if interrupted (save was already done above)
+                if self._interrupted:
+                    logger.warning(f"Graceful shutdown after epoch {epoch} — checkpoint saved.")
+                    break
+
+        finally:
+            # Restore original signal handler
+            signal.signal(signal.SIGINT, original_sigint)
 
         # Save final
         self._save_checkpoint("final_model.pt", epoch, val_loss)
@@ -262,18 +338,24 @@ class Trainer:
         return total_loss / n_batches, total_mae / n_batches
 
     def _save_checkpoint(self, filename: str, epoch: int, val_loss: float):
-        """Save model checkpoint."""
+        """Save model checkpoint with full training state for resumption."""
         path = self.checkpoint_dir / filename
-        torch.save(
-            {
-                "epoch": epoch,
-                "model_state_dict": self.model.state_dict(),
-                "optimizer_state_dict": self.optimizer.state_dict(),
-                "val_loss": val_loss,
-                "config": self.config,
-            },
-            path,
-        )
+        state = {
+            "epoch": epoch,
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "val_loss": val_loss,
+            "best_val_loss": self.best_val_loss,
+            "es_counter": self._es_counter,
+            "es_best": self._es_best,
+            "history": self.history,
+            "config": self.config,
+        }
+        if self.scheduler is not None:
+            state["scheduler_state_dict"] = self.scheduler.state_dict()
+        if self.scaler is not None:
+            state["scaler_state_dict"] = self.scaler.state_dict()
+        torch.save(state, path)
 
     def _check_early_stopping(self, val_loss: float) -> bool:
         """Check if training should stop."""

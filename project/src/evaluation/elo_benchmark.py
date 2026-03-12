@@ -1,3 +1,4 @@
+from __future__ import annotations
 """ELO evaluation via Lichess puzzle benchmark.
 
 Estimates model playing strength by testing on 1200 rated puzzles

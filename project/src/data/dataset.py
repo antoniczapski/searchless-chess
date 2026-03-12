@@ -1,3 +1,4 @@
+from __future__ import annotations
 """PyTorch Dataset and DataLoader factory for chess position data."""
 
 from pathlib import Path

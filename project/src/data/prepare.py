@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Data download and preparation pipeline.
 
 Downloads chess position data from HuggingFace, encodes it, and saves

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Chess board encoding utilities.
 
 Converts FEN strings to 8x8x12 tensor representation for neural network input.

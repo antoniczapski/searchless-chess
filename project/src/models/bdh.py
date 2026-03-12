@@ -1,3 +1,4 @@
+from __future__ import annotations
 """BDH chess evaluator — iterative value refinement over a fixed board.
 
 Adapts BDH-GPU (Pathway Technology, 2025) for chess position evaluation.
