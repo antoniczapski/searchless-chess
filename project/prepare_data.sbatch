@@ -1,47 +1,48 @@
 #!/bin/bash -l
 # ──────────────────────────────────────────────────────────
-# Data preparation job — download + encode 50M positions
+# Data preparation job — split 50M encoded positions
+# Uses existing chunks, creates memory-mapped .npy splits
 # ──────────────────────────────────────────────────────────
 #SBATCH -J bdh-data-prep
 #SBATCH -p plgrid-gpu-a100
 #SBATCH -A plgolimpiada2026-gpu-a100
 #SBATCH --gres=gpu:0
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=128G
-#SBATCH --time=04:00:00
-#SBATCH --output=logs/data-prep_%j.out
-#SBATCH --error=logs/data-prep_%j.err
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=64G
+#SBATCH --time=02:00:00
+#SBATCH --output=/net/tscratch/people/plgantoniczapski/bdh-chess-outputs/data-prep_%j.out
+#SBATCH --error=/net/tscratch/people/plgantoniczapski/bdh-chess-outputs/data-prep_%j.err
 
 set -euo pipefail
-
-REPO_DIR="$SLURM_SUBMIT_DIR"
-VENV="$HOME/envs/pcg"
-SCRATCH="/net/tscratch/people/plgantoniczapski"
-
-export HF_HOME="$SCRATCH/hf_cache"
-export HF_DATASETS_CACHE="$SCRATCH/hf_cache/datasets"
-
-mkdir -p "$REPO_DIR/logs" "$HF_HOME" "$HF_DATASETS_CACHE"
 
 echo "========================================"
 echo "Data Preparation — 50M positions"
 echo "========================================"
 echo "HOSTNAME     = $(hostname)"
 echo "SLURM_JOB_ID = $SLURM_JOB_ID"
-echo "MEM          = $SLURM_MEM_PER_NODE MB"
-echo "DATE         = $(date '+%Y-%m-%d %H:%M:%S')"
-echo "========================================"
+echo "DATE         = $(date)"
 
-source "$VENV/bin/activate"
-cd "$REPO_DIR"
+module load Miniconda3/25.7.0-2
+eval "$(conda shell.bash hook)"
+conda activate /net/tscratch/people/plgantoniczapski/conda-envs/bdh-chess
 
-python -u scripts/setup.py \
-    --num-samples 50000000 \
-    --train-ratio 0.90 \
-    --val-ratio 0.05 \
-    --test-ratio 0.05 \
-    --skip-env-check \
-    --output-dir "$SCRATCH/bdh-chess-data"
+cd /net/people/plgrid/plgantoniczapski/projects/searchless-chess/project
+
+# Clean up partial files from previous failed attempt
+rm -f /net/tscratch/people/plgantoniczapski/bdh-chess-data/train_boards.npy
+rm -f /net/tscratch/people/plgantoniczapski/bdh-chess-data/train_scores.npy
+rm -f /net/tscratch/people/plgantoniczapski/bdh-chess-data/split_info.json
+
+echo ""
+echo "Running data preparation..."
+python scripts/prepare_data.py --config configs/train_bdh_a100.yaml
+
+echo ""
+echo "Data preparation complete: $(date)"
+echo "Output files:"
+ls -lh /net/tscratch/people/plgantoniczapski/bdh-chess-data/*.npy
+echo ""
+cat /net/tscratch/people/plgantoniczapski/bdh-chess-data/split_info.json
 
 echo ""
 echo "Data preparation finished at $(date '+%Y-%m-%d %H:%M:%S')"

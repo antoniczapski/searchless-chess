@@ -2,13 +2,14 @@ from __future__ import annotations
 """Data download and preparation pipeline.
 
 Downloads chess position data from HuggingFace, encodes it, and saves
-train/val/test splits as .npz files for fast loading.
+train/val/test splits as memory-mapped .npy files (large data) or .npz
+files (small data) for fast loading.
 """
 
 import json
-import hashlib
 import gc
 import shutil
+import time
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +17,59 @@ from loguru import logger
 
 from src.data.encoding import fen_to_tensor, mate_to_cp, normalize_cp
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _is_nan(val) -> bool:
+    """Check if a value is NaN."""
+    try:
+        import math
+        return math.isnan(float(val))
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_data_ready(output_path: Path) -> dict | None:
+    """Check if prepared data already exists. Returns split_info or None."""
+    split_info_path = output_path / "split_info.json"
+    if not split_info_path.exists():
+        return None
+
+    info = json.loads(split_info_path.read_text())
+    fmt = info.get("format", "npz")
+
+    if fmt == "npy":
+        files_ok = all(
+            (output_path / f"{s}_boards.npy").exists() and
+            (output_path / f"{s}_scores.npy").exists()
+            for s in ["train", "val", "test"]
+        )
+    else:
+        files_ok = all(
+            (output_path / f"{s}.npz").exists()
+            for s in ["train", "val", "test"]
+        )
+
+    if files_ok:
+        logger.info(f"Data already prepared at {output_path} (format={fmt}). Skipping.")
+        return info
+    return None
+
+
+def _fmt_bytes(n: int) -> str:
+    """Human-readable byte size."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(n) < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PB"
+
+
+# ---------------------------------------------------------------------------
+# Main pipeline
+# ---------------------------------------------------------------------------
 
 def download_and_prepare(
     hf_dataset: str,
@@ -29,9 +83,12 @@ def download_and_prepare(
 ) -> dict:
     """Download dataset from HuggingFace and prepare train/val/test splits.
 
+    For large datasets (>2M samples) this uses memory-mapped .npy files
+    to avoid OOM during split creation. For small datasets it uses .npz.
+
     Args:
         hf_dataset: HuggingFace dataset identifier.
-        output_dir: Directory to save prepared .npz files.
+        output_dir: Directory to save prepared files.
         num_samples: Max samples to use (None = all).
         train_ratio: Fraction for training.
         val_ratio: Fraction for validation.
@@ -48,70 +105,84 @@ def download_and_prepare(
     output_path.mkdir(parents=True, exist_ok=True)
 
     # Check if already prepared
-    split_info_path = output_path / "split_info.json"
-    if split_info_path.exists():
-        info = json.loads(split_info_path.read_text())
-        # Verify files exist
-        if all((output_path / f"{s}.npz").exists() for s in ["train", "val", "test"]):
-            logger.info(f"Data already prepared at {output_path}. Skipping download.")
-            return info
+    existing = _is_data_ready(output_path)
+    if existing is not None:
+        return existing
 
-    logger.info(f"Downloading dataset: {hf_dataset}")
-    ds = load_dataset(hf_dataset, split="train")
+    # Decide format based on scale
+    use_mmap = (num_samples or 0) > 2_000_000
+    logger.info(
+        f"Format: {'npy/mmap (large-scale)' if use_mmap else 'npz (in-memory)'} "
+        f"for {num_samples or 'all'} samples"
+    )
 
-    if num_samples is not None and num_samples < len(ds):
-        logger.info(f"Sampling {num_samples} from {len(ds)} total positions.")
-        rng = np.random.default_rng(seed)
-        indices = rng.choice(len(ds), size=num_samples, replace=False)
-        indices.sort()
-        ds = ds.select(indices.tolist())
-
-    total = len(ds)
-    logger.info(f"Processing {total} positions...")
-
-    # Memory-efficient: encode in chunks and write intermediate files to disk,
-    # then concatenate. This avoids holding all 50M encoded positions in RAM
-    # alongside the HuggingFace dataset simultaneously.
-    CHUNK_SIZE = 5_000_000  # 5M positions per chunk (~9.2 GB per chunk)
+    # ------------------------------------------------------------------
+    # Phase 1: Encode positions into on-disk chunks
+    # ------------------------------------------------------------------
+    CHUNK_SIZE = 5_000_000  # 5M positions per chunk
     chunk_dir = output_path / "_chunks"
     chunk_dir.mkdir(parents=True, exist_ok=True)
 
-    # Check if chunks already exist (resume from OOM during split phase)
+    # Check if chunks already exist (resume support)
     existing_chunks = sorted(chunk_dir.glob("chunk_*.npz"))
+    need_encoding = True
+    chunk_files: list[tuple[str, int]] = []
+    total_valid = 0
+
     if existing_chunks:
-        expected_chunks = (total + CHUNK_SIZE - 1) // CHUNK_SIZE
-        if len(existing_chunks) >= expected_chunks:
-            logger.info(f"Found {len(existing_chunks)} existing chunks — skipping encoding.")
-            chunk_files = []
-            total_valid = 0
-            for ec in existing_chunks:
+        # Count total samples in existing chunks
+        chunk_files_tmp: list[tuple[str, int]] = []
+        total_in_chunks = 0
+        for ec in existing_chunks:
+            try:
                 data = np.load(ec)
                 sz = len(data["scores"])
-                chunk_files.append((str(ec), sz))
-                total_valid += sz
+                chunk_files_tmp.append((str(ec), sz))
+                total_in_chunks += sz
                 del data
-            skipped = total - total_valid
-            # Skip the encoding loop entirely
-            ds_loaded = False
+            except Exception as e:
+                logger.warning(f"Corrupt chunk {ec}: {e}")
+                break
+
+        expected_total = num_samples or total_in_chunks
+        # Accept chunks if we have approximately the right number of samples
+        # (within one chunk size tolerance)
+        if total_in_chunks >= expected_total - CHUNK_SIZE:
+            logger.info(
+                f"Found {len(chunk_files_tmp)} existing chunks with {total_in_chunks:,} "
+                f"samples — skipping encoding phase."
+            )
+            chunk_files = chunk_files_tmp
+            total_valid = total_in_chunks
+            need_encoding = False
         else:
-            logger.info(f"Found {len(existing_chunks)} chunks but expected ~{expected_chunks} — re-encoding.")
-            ds_loaded = True
-    else:
-        ds_loaded = True
+            logger.info(
+                f"Found {len(chunk_files_tmp)} chunks ({total_in_chunks:,} samples) "
+                f"but expected ~{expected_total:,} — will re-encode."
+            )
 
-    if not ds_loaded:
-        # Free the HF dataset — we don't need it, chunks are on disk
-        del ds
-        gc.collect()
+    if need_encoding:
+        logger.info(f"Downloading dataset: {hf_dataset}")
+        ds = load_dataset(hf_dataset, split="train")
 
-    if ds_loaded:
+        if num_samples is not None and num_samples < len(ds):
+            logger.info(f"Sampling {num_samples} from {len(ds):,} total positions.")
+            rng = np.random.default_rng(seed)
+            indices = rng.choice(len(ds), size=num_samples, replace=False)
+            indices.sort()
+            ds = ds.select(indices.tolist())
+
+        total = len(ds)
+        logger.info(f"Encoding {total:,} positions into chunks of {CHUNK_SIZE:,}...")
+
         chunk_boards = np.zeros((CHUNK_SIZE, 8, 8, 12), dtype=np.float32)
         chunk_scores = np.zeros(CHUNK_SIZE, dtype=np.float32)
-        chunk_idx = 0  # position within current chunk
-        chunk_num = 0  # chunk file counter
+        chunk_idx = 0
+        chunk_num = 0
         total_valid = 0
         skipped = 0
         chunk_files = []
+        t_start = time.time()
 
         def _flush_chunk():
             nonlocal chunk_idx, chunk_num
@@ -120,19 +191,29 @@ def download_and_prepare(
             path = chunk_dir / f"chunk_{chunk_num:03d}.npz"
             np.savez(path, boards=chunk_boards[:chunk_idx], scores=chunk_scores[:chunk_idx])
             chunk_files.append((str(path), chunk_idx))
-            logger.info(f"  Flushed chunk {chunk_num}: {chunk_idx} samples -> {path}")
+            elapsed = time.time() - t_start
+            logger.info(
+                f"  Flushed chunk {chunk_num}: {chunk_idx:,} samples -> {path} "
+                f"[{elapsed:.0f}s elapsed, {total_valid:,}/{total:,} encoded]"
+            )
             chunk_num += 1
             chunk_idx = 0
 
         for i, row in enumerate(ds):
             if i % 500_000 == 0 and i > 0:
-                logger.info(f"  Encoded {i}/{total} positions... ({total_valid} valid, {skipped} skipped)")
+                elapsed = time.time() - t_start
+                rate = i / elapsed
+                eta = (total - i) / rate if rate > 0 else 0
+                logger.info(
+                    f"  Encoded {i:,}/{total:,} positions "
+                    f"({total_valid:,} valid, {skipped:,} skipped) "
+                    f"[{elapsed:.0f}s elapsed, ETA {eta:.0f}s]"
+                )
 
             fen = row["fen"]
             cp = row.get("cp")
             mate = row.get("mate")
 
-            # Resolve score
             if cp is not None and not _is_nan(cp):
                 raw_cp = float(cp)
             elif mate is not None and not _is_nan(mate):
@@ -153,21 +234,20 @@ def download_and_prepare(
             if chunk_idx >= CHUNK_SIZE:
                 _flush_chunk()
 
-        # Flush remaining
         _flush_chunk()
-
-        # Free the HF dataset from memory before loading chunks
-        del ds
-        del chunk_boards, chunk_scores
+        del ds, chunk_boards, chunk_scores
         gc.collect()
 
-        logger.info(f"Encoded {total_valid} positions ({skipped} skipped) in {len(chunk_files)} chunks.")
+        elapsed = time.time() - t_start
+        logger.info(
+            f"Encoding complete: {total_valid:,} positions ({skipped:,} skipped) "
+            f"in {len(chunk_files)} chunks [{elapsed:.0f}s]."
+        )
 
-    # --- Memory-efficient shuffle + split using index permutation ---
-    # Instead of loading all chunks into one giant array, we:
-    #  1. Generate a shuffled permutation of indices [0, total_valid)
-    #  2. Split indices into train/val/test
-    #  3. For each split, load only the needed rows from chunks on demand
+    # ------------------------------------------------------------------
+    # Phase 2: Shuffle + split into train/val/test
+    # ------------------------------------------------------------------
+    logger.info(f"Building splits from {total_valid:,} positions...")
 
     rng = np.random.default_rng(seed)
     perm = rng.permutation(total_valid)
@@ -181,70 +261,153 @@ def download_and_prepare(
         "test": np.sort(perm[n_train + n_val :]),
     }
 
-    # Build a map: global_index -> (chunk_file, local_index)
-    chunk_boundaries = []  # (start_global_idx, end_global_idx, chunk_path)
+    # Build chunk boundary map
+    chunk_boundaries: list[tuple[int, int, str]] = []
     offset = 0
     for path, size in chunk_files:
         chunk_boundaries.append((offset, offset + size, path))
         offset += size
 
-    info = {"seed": seed, "total": total_valid, "splits": {}}
+    split_info_path = output_path / "split_info.json"
+    info: dict = {
+        "seed": seed,
+        "total": total_valid,
+        "format": "npy" if use_mmap else "npz",
+        "splits": {},
+    }
 
     for split_name, indices in split_indices.items():
         n_split = len(indices)
-        boards_out = np.zeros((n_split, 8, 8, 12), dtype=np.float32)
-        scores_out = np.zeros(n_split, dtype=np.float32)
+        mem_needed = n_split * 8 * 8 * 12 * 4  # float32 boards
+        logger.info(
+            f"  Building {split_name}: {n_split:,} samples "
+            f"(~{_fmt_bytes(mem_needed)} for boards)"
+        )
 
-        logger.info(f"  Building {split_name}: {n_split} samples ...")
+        t_split = time.time()
 
-        # Process one chunk at a time to limit memory
-        out_pos = 0
-        for chunk_start, chunk_end, chunk_path in chunk_boundaries:
-            # Find which split indices fall into this chunk
-            mask = (indices >= chunk_start) & (indices < chunk_end)
-            global_idxs = indices[mask]
-            if len(global_idxs) == 0:
-                continue
+        if use_mmap:
+            _write_split_mmap(
+                output_path, split_name, indices, n_split,
+                chunk_boundaries, rng
+            )
+            info["splits"][split_name] = {
+                "size": n_split,
+                "boards_path": str(output_path / f"{split_name}_boards.npy"),
+                "scores_path": str(output_path / f"{split_name}_scores.npy"),
+            }
+        else:
+            _write_split_npz(
+                output_path, split_name, indices, n_split,
+                chunk_boundaries, rng
+            )
+            info["splits"][split_name] = {
+                "size": n_split,
+                "path": str(output_path / f"{split_name}.npz"),
+            }
 
-            local_idxs = global_idxs - chunk_start
-            data = np.load(chunk_path)
-            boards_out[out_pos : out_pos + len(local_idxs)] = data["boards"][local_idxs]
-            scores_out[out_pos : out_pos + len(local_idxs)] = data["scores"][local_idxs]
-            out_pos += len(local_idxs)
-            del data
-
-        # In-place shuffle within the split (the chunk-based extraction
-        # produces sorted-by-chunk order, so we shuffle to ensure randomness).
-        # Use Fisher-Yates via rng.shuffle on a joint index to avoid copies.
-        shuffle_idx = np.arange(n_split)
-        rng.shuffle(shuffle_idx)
-        boards_out[:] = boards_out[shuffle_idx]
-        scores_out[:] = scores_out[shuffle_idx]
-        del shuffle_idx
-
-        path = output_path / f"{split_name}.npz"
-        logger.info(f"  Saving {split_name}: {n_split} samples -> {path} ...")
-        np.savez(path, boards=boards_out, scores=scores_out)
-        info["splits"][split_name] = {"size": n_split, "path": str(path)}
-        logger.info(f"  ✓ Saved {split_name}")
-
-        # Free memory between splits
-        del boards_out, scores_out
-        gc.collect()
+        elapsed = time.time() - t_split
+        logger.info(f"  ✓ Saved {split_name} ({n_split:,} samples) in {elapsed:.1f}s")
 
     split_info_path.write_text(json.dumps(info, indent=2))
 
     # Clean up chunk files
     shutil.rmtree(chunk_dir, ignore_errors=True)
-
     logger.success(f"Data preparation complete. Info saved to {split_info_path}")
     return info
 
 
-def _is_nan(val) -> bool:
-    """Check if a value is NaN."""
-    try:
-        import math
-        return math.isnan(float(val))
-    except (TypeError, ValueError):
-        return False
+# ---------------------------------------------------------------------------
+# Split writers
+# ---------------------------------------------------------------------------
+
+def _write_split_mmap(
+    output_path: Path,
+    split_name: str,
+    indices: np.ndarray,
+    n_split: int,
+    chunk_boundaries: list[tuple[int, int, str]],
+    rng: np.random.Generator,
+) -> None:
+    """Write a split using memory-mapped .npy files (no OOM for large data).
+
+    Creates {split}_boards.npy and {split}_scores.npy on disk, filling them
+    chunk by chunk. Only one chunk is in RAM at a time.
+    """
+    boards_path = output_path / f"{split_name}_boards.npy"
+    scores_path = output_path / f"{split_name}_scores.npy"
+
+    # Create memory-mapped output files
+    boards_out = np.lib.format.open_memmap(
+        str(boards_path), mode="w+", dtype=np.float32,
+        shape=(n_split, 8, 8, 12),
+    )
+    scores_out = np.lib.format.open_memmap(
+        str(scores_path), mode="w+", dtype=np.float32,
+        shape=(n_split,),
+    )
+
+    # Fill from chunks (indices are sorted, so we read chunks sequentially)
+    out_pos = 0
+    for chunk_start, chunk_end, chunk_path in chunk_boundaries:
+        mask = (indices >= chunk_start) & (indices < chunk_end)
+        global_idxs = indices[mask]
+        if len(global_idxs) == 0:
+            continue
+
+        local_idxs = global_idxs - chunk_start
+        data = np.load(chunk_path)
+        n_here = len(local_idxs)
+        boards_out[out_pos : out_pos + n_here] = data["boards"][local_idxs]
+        scores_out[out_pos : out_pos + n_here] = data["scores"][local_idxs]
+        out_pos += n_here
+        del data
+        gc.collect()
+        logger.debug(
+            f"    {split_name}: filled {out_pos:,}/{n_split:,} from {Path(chunk_path).name}"
+        )
+
+    # Flush to disk
+    boards_out.flush()
+    scores_out.flush()
+    del boards_out, scores_out
+    gc.collect()
+
+
+def _write_split_npz(
+    output_path: Path,
+    split_name: str,
+    indices: np.ndarray,
+    n_split: int,
+    chunk_boundaries: list[tuple[int, int, str]],
+    rng: np.random.Generator,
+) -> None:
+    """Write a split as a single .npz file (fine for small data)."""
+    boards_out = np.zeros((n_split, 8, 8, 12), dtype=np.float32)
+    scores_out = np.zeros(n_split, dtype=np.float32)
+
+    out_pos = 0
+    for chunk_start, chunk_end, chunk_path in chunk_boundaries:
+        mask = (indices >= chunk_start) & (indices < chunk_end)
+        global_idxs = indices[mask]
+        if len(global_idxs) == 0:
+            continue
+
+        local_idxs = global_idxs - chunk_start
+        data = np.load(chunk_path)
+        boards_out[out_pos : out_pos + len(local_idxs)] = data["boards"][local_idxs]
+        scores_out[out_pos : out_pos + len(local_idxs)] = data["scores"][local_idxs]
+        out_pos += len(local_idxs)
+        del data
+
+    # Shuffle in memory (fine for small data)
+    shuffle_idx = np.arange(n_split)
+    rng.shuffle(shuffle_idx)
+    boards_out[:] = boards_out[shuffle_idx]
+    scores_out[:] = scores_out[shuffle_idx]
+    del shuffle_idx
+
+    path = output_path / f"{split_name}.npz"
+    np.savez(path, boards=boards_out, scores=scores_out)
+    del boards_out, scores_out
+    gc.collect()

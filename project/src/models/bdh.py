@@ -34,6 +34,26 @@ import torch.nn.functional as F
 
 
 # ---------------------------------------------------------------------------
+# Numerical stability helpers
+# ---------------------------------------------------------------------------
+
+# Activation clamp to prevent fp16 overflow (fp16 max ~ 65504)
+_ACTIVATION_CLAMP = 1000.0
+
+
+class RMSNorm(nn.Module):
+    """Root Mean Square Layer Normalization (cheaper than LayerNorm)."""
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.scale = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        rms = x.float().pow(2).mean(dim=-1, keepdim=True).add(self.eps).rsqrt()
+        return (x.float() * rms).to(x.dtype) * self.scale
+
+
+# ---------------------------------------------------------------------------
 # Deep-supervision loss wrapper
 # ---------------------------------------------------------------------------
 
@@ -166,6 +186,7 @@ class BDHChess(nn.Module):
         # Shared layer norms
         self.ln_a = nn.LayerNorm(d)   # after attention read
         self.ln_z = nn.LayerNorm(d)   # after decode
+        self.ln_x = RMSNorm(n)        # neuron activation normalization
 
         # Learnable damping factor lambda in (0, 1)
         self.log_damping = nn.Parameter(
@@ -273,13 +294,19 @@ class BDHChess(nn.Module):
             dx = F.relu(dx)                            # sparse positive
             x = x + dx.reshape(B, self.n)              # residual update
 
+            # 4b. Normalize neurons to prevent unbounded growth
+            #     (key fix: x only grows via ReLU+residual, never shrinks)
+            x = self.ln_x(x)
+            x = x.clamp(min=0.0, max=_ACTIVATION_CLAMP)
+
             # 5. Write to synaptic state (EMA update)
             x_h_new = x.view(B, self.nh, self.N)
-            # Normalize keys before write to prevent blowup
+            # Normalize both keys and values before write to prevent blowup
             x_write = x_h_new / (x_h_new.norm(dim=-1, keepdim=True) + 1e-8)
             z_h = z.view(B, self.nh, self.d_head)
+            z_write = z_h / (z_h.norm(dim=-1, keepdim=True) + 1e-8)
             rho = lam * rho + (1.0 - lam) * torch.einsum(
-                "bhn,bhd->bhnd", x_write, z_h
+                "bhn,bhd->bhnd", x_write, z_write
             )
 
             # 6. Predict value at this step

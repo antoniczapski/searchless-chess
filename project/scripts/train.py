@@ -5,6 +5,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -14,6 +15,16 @@ from loguru import logger
 
 # Allow imports from project root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# Load .env for W&B credentials etc.
+try:
+    from dotenv import load_dotenv
+    for p in [Path(__file__).resolve().parent.parent, Path(__file__).resolve().parent.parent.parent]:
+        if (p / ".env").exists():
+            load_dotenv(p / ".env")
+            break
+except ImportError:
+    pass
 
 from src.data.dataset import create_dataloaders
 from src.models.registry import create_model, count_parameters

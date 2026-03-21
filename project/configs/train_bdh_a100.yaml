@@ -9,9 +9,9 @@ experiment:
   seed: 42
 
 wandb:
-  enabled: false
+  enabled: true
   project: "bdh-searchless-chess"
-  tags: ["bdh", "iterative", "a100", "large-scale"]
+  tags: ["bdh", "iterative", "a100", "large-scale", "50M", "resumed"]
 
 data:
   hf_dataset: "mateuszgrzyb/lichess-stockfish-normalized"
@@ -38,13 +38,14 @@ model:
 
 training:
   epochs: 30
-  learning_rate: 0.0005
+  learning_rate: 0.0003
   min_learning_rate: 0.000001
   weight_decay: 0.0001
   clipnorm: 1.0
   mixed_precision: true
-  warmup_epochs: 3
-  save_every_epochs: 3
+  amp_dtype: bf16              # bf16 has same range as fp32 (no overflow at 65504)
+  warmup_epochs: 5
+  save_every_epochs: 2
   early_stopping:
     patience: 10
     min_delta: 0.00001
@@ -53,4 +54,4 @@ evaluation:
   puzzle_path: "data/puzzles/test_puzzles.feather"
 
 output:
-  dir: "/net/tscratch/people/plgantoniczapski/bdh-chess-outputs/bdh-chess-v3-a100"
+  dir: "/net/tscratch/people/plgantoniczapski/bdh-chess-outputs/bdh-chess-v3-a100-v2"
