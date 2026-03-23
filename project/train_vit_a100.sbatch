@@ -36,6 +36,10 @@ echo "Config: $CONFIG"
 # Activate conda
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV"
+
+# Redirect HuggingFace cache to scratch (home dir has quota limits)
+export HF_HOME="/net/tscratch/people/plgantoniczapski/hf-cache"
+
 echo "Python: $(which python)"
 echo "PyTorch: $(python -c 'import torch; print(torch.__version__)')"
 echo "CUDA available: $(python -c 'import torch; print(torch.cuda.is_available())')"

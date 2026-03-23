@@ -28,6 +28,10 @@ module load Miniconda3/25.7.0-2
 eval "$(conda shell.bash hook)"
 conda activate /net/tscratch/people/plgantoniczapski/conda-envs/bdh-chess
 
+# Redirect HuggingFace cache to scratch (home dir has quota limits)
+export HF_HOME="/net/tscratch/people/plgantoniczapski/hf-cache"
+export HF_DATASETS_CACHE="/net/tscratch/people/plgantoniczapski/hf-cache/datasets"
+
 cd /net/people/plgrid/plgantoniczapski/projects/searchless-chess/project
 
 # Output directory for v2 data
