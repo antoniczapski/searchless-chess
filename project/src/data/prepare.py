@@ -175,7 +175,7 @@ def download_and_prepare(
         total = len(ds)
         logger.info(f"Encoding {total:,} positions into chunks of {CHUNK_SIZE:,}...")
 
-        chunk_boards = np.zeros((CHUNK_SIZE, 8, 8, 12), dtype=np.float32)
+        chunk_boards = np.zeros((CHUNK_SIZE, 8, 8, 12), dtype=np.uint8)
         chunk_scores = np.zeros(CHUNK_SIZE, dtype=np.float32)
         chunk_idx = 0
         chunk_num = 0
@@ -227,7 +227,13 @@ def download_and_prepare(
                 continue
 
             chunk_boards[chunk_idx] = fen_to_tensor(fen, always_white_perspective=True)
-            chunk_scores[chunk_idx] = normalize_cp(raw_cp, scale=cp_scale)
+            # Fix: cp from HuggingFace is from white's perspective.
+            # With always_white_perspective=True, the board is mirrored for
+            # black so side-to-move is always at bottom. We must also flip
+            # the score sign so it means "good for the side-to-move".
+            is_white_to_move = " w " in fen
+            sign = 1.0 if is_white_to_move else -1.0
+            chunk_scores[chunk_idx] = sign * normalize_cp(raw_cp, scale=cp_scale)
             chunk_idx += 1
             total_valid += 1
 
@@ -278,7 +284,7 @@ def download_and_prepare(
 
     for split_name, indices in split_indices.items():
         n_split = len(indices)
-        mem_needed = n_split * 8 * 8 * 12 * 4  # float32 boards
+        mem_needed = n_split * 8 * 8 * 12 * 1  # uint8 boards
         logger.info(
             f"  Building {split_name}: {n_split:,} samples "
             f"(~{_fmt_bytes(mem_needed)} for boards)"
@@ -337,9 +343,9 @@ def _write_split_mmap(
     boards_path = output_path / f"{split_name}_boards.npy"
     scores_path = output_path / f"{split_name}_scores.npy"
 
-    # Create memory-mapped output files
+    # Create memory-mapped output files (uint8 for boards: 4× smaller)
     boards_out = np.lib.format.open_memmap(
-        str(boards_path), mode="w+", dtype=np.float32,
+        str(boards_path), mode="w+", dtype=np.uint8,
         shape=(n_split, 8, 8, 12),
     )
     scores_out = np.lib.format.open_memmap(
@@ -383,7 +389,7 @@ def _write_split_npz(
     rng: np.random.Generator,
 ) -> None:
     """Write a split as a single .npz file (fine for small data)."""
-    boards_out = np.zeros((n_split, 8, 8, 12), dtype=np.float32)
+    boards_out = np.zeros((n_split, 8, 8, 12), dtype=np.uint8)
     scores_out = np.zeros(n_split, dtype=np.float32)
 
     out_pos = 0

@@ -57,6 +57,18 @@ class Trainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
 
+        # torch.compile for faster forward/backward (PyTorch 2.0+)
+        compile_cfg = tc.get("compile", {})
+        if compile_cfg.get("enabled", False) and hasattr(torch, "compile"):
+            compile_mode = compile_cfg.get("mode", "reduce-overhead")
+            logger.info(f"Compiling model with torch.compile(mode='{compile_mode}')...")
+            self.model = torch.compile(self.model, mode=compile_mode)
+            logger.info("Model compiled successfully")
+
+        # cudnn.benchmark for auto-tuning conv kernels
+        if self.device.type == "cuda":
+            torch.backends.cudnn.benchmark = True
+
         # Training config
         tc = config["training"]
         self.epochs = tc["epochs"]

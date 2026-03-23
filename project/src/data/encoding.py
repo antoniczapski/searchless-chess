@@ -33,7 +33,7 @@ def fen_to_tensor(fen: str, always_white_perspective: bool = True) -> np.ndarray
             so the model always sees the position from the side-to-move.
 
     Returns:
-        Tensor of shape (8, 8, 12) with dtype float32.
+        Tensor of shape (8, 8, 12) with dtype uint8 (binary: 0 or 1).
         Channels 0-5: side-to-move pieces (P, N, B, R, Q, K).
         Channels 6-11: opponent pieces (P, N, B, R, Q, K).
     """
@@ -42,12 +42,12 @@ def fen_to_tensor(fen: str, always_white_perspective: bool = True) -> np.ndarray
     if always_white_perspective and not board.turn:
         board = board.mirror()
 
-    tensor = np.zeros((8, 8, 12), dtype=np.float32)
+    tensor = np.zeros((8, 8, 12), dtype=np.uint8)
 
     for square, piece in board.piece_map().items():
         channel = PIECE_TO_CHANNEL[(piece.piece_type, piece.color)]
         row, col = divmod(square, 8)
-        tensor[7 - row, col, channel] = 1.0
+        tensor[7 - row, col, channel] = 1
 
     return tensor
 

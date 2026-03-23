@@ -1,0 +1,59 @@
+# ──────────────────────────────────────────────
+# ViT-S v2 — Fixed score perspective + optimized
+# Vision Transformer (Small) on A100
+# ──────────────────────────────────────────────
+# Fixed score sign flip for black-to-move positions.
+# Optimizations: uint8 boards, in-memory loading,
+# larger batch size, torch.compile.
+# GPU: NVIDIA A100 (40/80 GB VRAM)
+
+experiment:
+  name: "vit-s-v2-fixed"
+  seed: 42
+
+wandb:
+  enabled: true
+  project: "bdh-searchless-chess"
+  tags: ["vit", "v2", "a100", "50M", "score-fix", "optimized"]
+
+data:
+  hf_dataset: "mateuszgrzyb/lichess-stockfish-normalized"
+  output_dir: "/net/tscratch/people/plgantoniczapski/bdh-chess-data-v2"
+  num_samples: 50000000       # 50M positions
+  train_ratio: 0.90
+  val_ratio: 0.05
+  test_ratio: 0.05
+  cp_scale: 1000.0            # Reference uses tanh(cp/1000)
+  batch_size: 16384            # 2× previous — A100 has massive VRAM headroom
+  num_workers: 8               # Match SLURM --cpus-per-task=8
+
+model:
+  architecture: "vit"
+  projection_dim: 256          # ViT-S (2.64M params)
+  num_heads: 4
+  transformer_layers: 5
+  ffn_ratio: 2                 # Reference uses 2× not 4×
+  dropout_rate: 0.1
+
+training:
+  epochs: 30
+  learning_rate: 0.000283      # 2e-4 × sqrt(2) for 2× batch size scaling
+  min_learning_rate: 0.000001  # 1e-6
+  weight_decay: 0.0001         # 1e-4
+  clipnorm: 1.0
+  mixed_precision: true
+  amp_dtype: bf16
+  warmup_epochs: 5             # Reference: 5 virtual epochs warmup
+  save_every_epochs: 2
+  compile:
+    enabled: true
+    mode: "reduce-overhead"
+  early_stopping:
+    patience: 10
+    min_delta: 0.00001
+
+output:
+  dir: "/net/tscratch/people/plgantoniczapski/bdh-chess-outputs/vit-s-v2-fixed"
+
+evaluation:
+  puzzle_path: "data/puzzles/test_puzzles.feather"
