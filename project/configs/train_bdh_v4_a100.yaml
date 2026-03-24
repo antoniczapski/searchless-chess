@@ -1,0 +1,63 @@
+# ──────────────────────────────────────────────
+# BDH-Chess v4 — Fixed score perspective + optimized
+# Iterative value refinement with synaptic scratchpad
+# ──────────────────────────────────────────────
+# Fixed score sign flip for black-to-move positions.
+# Optimizations: uint8 boards, in-memory loading,
+# increased batch size, 8 data workers.
+# GPU: NVIDIA A100 (40/80 GB VRAM)
+
+experiment:
+  name: "bdh-v4-fixed"
+  seed: 42
+
+wandb:
+  enabled: true
+  project: "bdh-searchless-chess"
+  tags: ["bdh", "v4", "iterative", "a100", "50M", "score-fix", "optimized"]
+
+data:
+  hf_dataset: "mateuszgrzyb/lichess-stockfish-normalized"
+  output_dir: "/net/tscratch/people/plgantoniczapski/bdh-chess-data-v2"
+  num_samples: 50000000       # 50M positions
+  train_ratio: 0.90
+  val_ratio: 0.05
+  test_ratio: 0.05
+  cp_scale: 1000.0            # Must match data-v2 (tanh(cp/1000))
+  batch_size: 2048             # BDH has 12 thinking steps — more VRAM than ViT
+  num_workers: 8               # Match SLURM --cpus-per-task=8
+
+model:
+  architecture: "bdh"
+  n_embd: 256
+  n_head: 8
+  n_neurons_mult: 8           # N = 8*256/8 = 256 per head, 2048 total
+  thinking_steps: 12           # 12 refinement steps
+  dropout: 0.1
+  init_damping: 0.9
+  deep_supervision: true
+  deep_sup_weight: 0.1
+  stability_weight: 0.01
+
+training:
+  epochs: 50                   # More epochs — 48h budget allows it
+  learning_rate: 0.0003        # Same as BDH-v3
+  min_learning_rate: 0.000001
+  weight_decay: 0.0001
+  clipnorm: 1.0
+  mixed_precision: true
+  amp_dtype: bf16              # bf16 has same range as fp32
+  warmup_epochs: 5
+  save_every_epochs: 2
+  compile:
+    enabled: false             # Disabled — avoids torch.compile OOM issues
+    mode: "default"
+  early_stopping:
+    patience: 15               # More patience with 50 epochs
+    min_delta: 0.00001
+
+output:
+  dir: "/net/tscratch/people/plgantoniczapski/bdh-chess-outputs/bdh-v4-fixed"
+
+evaluation:
+  puzzle_path: "data/puzzles/test_puzzles.feather"
