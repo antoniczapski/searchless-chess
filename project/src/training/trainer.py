@@ -57,6 +57,9 @@ class Trainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
 
+        # Training config
+        tc = config["training"]
+
         # torch.compile for faster forward/backward (PyTorch 2.0+)
         compile_cfg = tc.get("compile", {})
         if compile_cfg.get("enabled", False) and hasattr(torch, "compile"):
@@ -68,9 +71,6 @@ class Trainer:
         # cudnn.benchmark for auto-tuning conv kernels
         if self.device.type == "cuda":
             torch.backends.cudnn.benchmark = True
-
-        # Training config
-        tc = config["training"]
         self.epochs = tc["epochs"]
         self.lr = tc["learning_rate"]
         self.weight_decay = tc.get("weight_decay", 1e-4)

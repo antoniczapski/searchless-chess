@@ -4,8 +4,8 @@
 #SBATCH --partition=plgrid-gpu-a100
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --time=48:00:00
+#SBATCH --mem=96G
+#SBATCH --time=12:00:00
 #SBATCH --output=logs/vit-s-v2_%j.out
 #SBATCH --error=logs/vit-s-v2_%j.err
 

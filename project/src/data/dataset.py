@@ -100,22 +100,32 @@ class InMemoryChessDataset(Dataset):
     def __init__(self, boards_path: str | Path, scores_path: str | Path):
         logger.info(f"Loading {Path(boards_path).name} into RAM...")
         import time
+        import gc
         t0 = time.time()
 
-        # Load numpy arrays
+        # Load boards: numpy → torch → permute, minimizing peak memory.
+        # torch.from_numpy shares memory with the numpy array, so we
+        # must keep boards_np alive until permute().contiguous() creates
+        # an independent copy, then immediately delete the numpy array.
         boards_np = np.load(str(boards_path))    # (N, 8, 8, 12), uint8 or float32
-        scores_np = np.load(str(scores_path))    # (N,), float32
-
-        # Convert to torch tensors
-        # Keep boards as uint8 in RAM (4× smaller), cast to float in __getitem__
         self.boards = torch.from_numpy(boards_np).permute(0, 3, 1, 2).contiguous()
-        self.scores = torch.from_numpy(scores_np).unsqueeze(1)  # (N, 1)
+        del boards_np
+        gc.collect()
+        logger.info(
+            f"  Boards loaded: {self.boards.shape}, dtype={self.boards.dtype}, "
+            f"{self.boards.nbytes / 1e9:.1f} GB"
+        )
+
+        # Scores are small (~180 MB for 45M), no memory concern
+        scores_np = np.load(str(scores_path))    # (N,), float32
+        self.scores = torch.from_numpy(scores_np.copy()).unsqueeze(1)  # (N, 1)
+        del scores_np
 
         elapsed = time.time() - t0
         mem_gb = (self.boards.nbytes + self.scores.nbytes) / 1e9
         logger.info(
             f"InMemoryChessDataset: {len(self.scores):,} samples loaded "
-            f"in {elapsed:.1f}s ({mem_gb:.1f} GB RAM, dtype={self.boards.dtype})"
+            f"in {elapsed:.1f}s ({mem_gb:.1f} GB RAM)"
         )
 
     def __len__(self) -> int:

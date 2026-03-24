@@ -24,7 +24,7 @@ data:
   val_ratio: 0.05
   test_ratio: 0.05
   cp_scale: 1000.0            # Reference uses tanh(cp/1000)
-  batch_size: 16384            # 2× previous — A100 has massive VRAM headroom
+  batch_size: 8192             # Matches previous ViT-S run — fits A100 40GB VRAM
   num_workers: 8               # Match SLURM --cpus-per-task=8
 
 model:
@@ -37,7 +37,7 @@ model:
 
 training:
   epochs: 30
-  learning_rate: 0.000283      # 2e-4 × sqrt(2) for 2× batch size scaling
+  learning_rate: 0.0002        # Base LR for batch 8192 (same as previous ViT-S)
   min_learning_rate: 0.000001  # 1e-6
   weight_decay: 0.0001         # 1e-4
   clipnorm: 1.0
@@ -46,8 +46,8 @@ training:
   warmup_epochs: 5             # Reference: 5 virtual epochs warmup
   save_every_epochs: 2
   compile:
-    enabled: true
-    mode: "reduce-overhead"
+    enabled: false              # Disabled — torch.compile OOMs on 40GB A100 with this model
+    mode: "default"
   early_stopping:
     patience: 10
     min_delta: 0.00001
