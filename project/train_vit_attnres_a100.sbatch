@@ -5,7 +5,7 @@
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
-#SBATCH --time=36:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=logs/vit-attnres_%j.out
 #SBATCH --error=logs/vit-attnres_%j.err
 
@@ -33,7 +33,7 @@ echo "Node: $(hostname)"
 echo "GPUs: $CUDA_VISIBLE_DEVICES"
 echo "Start: $(date)"
 echo "Config: $CONFIG"
-echo "Time limit: 36h"
+echo "Time limit: 12h (resubmit to resume — auto-detects checkpoint)"
 
 # Activate conda
 source "$(conda info --base)/etc/profile.d/conda.sh"

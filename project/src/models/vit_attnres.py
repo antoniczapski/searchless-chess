@@ -78,23 +78,28 @@ class DepthAttnRes(nn.Module):
         if len(sources) == 1:
             return sources[0]
 
-        # Stack sources: (S, B, T, D)
-        stacked = torch.stack(sources, dim=0)
-        S = stacked.shape[0]
+        # Compute scores without stacking all sources into one huge tensor.
+        # This avoids allocating an (S, B, T, D) intermediate.
+        # query: (D,)
+        q = self.query
 
-        # Normalize keys for scoring: (S, B, T, D)
-        keys_normed = self.key_norm(stacked)
+        # Compute per-source logits: list of (B, T) tensors
+        logits = []
+        for src in sources:
+            # RMSNorm → dot with query → scalar per token
+            normed = self.key_norm(src)                     # (B, T, D)
+            s = (normed * q).sum(dim=-1)                    # (B, T)
+            logits.append(s)
 
-        # Score: dot product of pseudo-query with each normalized source
-        # query: (D,) → (1, 1, 1, D) dot with (S, B, T, D) → (S, B, T)
-        scores = (keys_normed * self.query.unsqueeze(0).unsqueeze(0).unsqueeze(0)).sum(dim=-1)
+        # Stack logits only (much smaller than full sources): (S, B, T)
+        logits_stacked = torch.stack(logits, dim=0)
+        weights = F.softmax(logits_stacked, dim=0)          # (S, B, T)
 
-        # Softmax over depth axis (source index), per token position
-        # (S, B, T) → (S, B, T, 1) weights
-        weights = F.softmax(scores, dim=0).unsqueeze(-1)
-
-        # Weighted sum: (S, B, T, D) * (S, B, T, 1) → sum over S → (B, T, D)
-        return (stacked * weights).sum(dim=0)
+        # Weighted sum over sources
+        result = torch.zeros_like(sources[0])               # (B, T, D)
+        for i, src in enumerate(sources):
+            result = result + weights[i].unsqueeze(-1) * src
+        return result
 
 
 class SwiGLUFFN(nn.Module):
