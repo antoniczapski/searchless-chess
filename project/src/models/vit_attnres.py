@@ -178,35 +178,28 @@ class AttnResTransformerBlock(nn.Module):
 
         Returns:
             Tuple of (updated_sources, output_tensor).
-            updated_sources has 2 new entries appended (attn output, mlp output).
-            Sources beyond the window are detached to bound autograd memory.
+            updated_sources is truncated to the last ``window_size`` entries
+            to bound GPU memory — older sources are discarded entirely.
         """
         # --- Attention sublayer ---
-        # Mix depth sources to get input for attention
         h_attn = self.attn_res_attn(sources)
-        # Pre-norm self-attention
         h_normed = self.norm_attn(h_attn)
         attn_out, _ = self.attn(h_normed, h_normed, h_normed)
-        # Output of this sublayer (the "layer output" f_i(h_i) in paper terms)
         v_attn = h_attn + attn_out
         sources = sources + [v_attn]
 
         # --- MLP sublayer ---
-        # Mix depth sources (now including attn output) for MLP input
         h_mlp = self.attn_res_mlp(sources)
-        # Pre-norm SwiGLU FFN
         mlp_out = self.mlp(self.norm_mlp(h_mlp))
         v_mlp = h_mlp + mlp_out
         sources = sources + [v_mlp]
 
-        # Detach sources that are now outside both windows to free autograd memory.
-        # The maximum window_size used by the *next* block's AttnRes mixers
-        # determines how many recent sources need gradients.
-        # With window_size=3, we keep the last 3 with gradients,
-        # and detach everything older.
+        # Truncate sources to the window size — discard older tensors
+        # so they can be freed from GPU memory. Each subsequent AttnRes
+        # mixer only looks at the last W sources anyway.
         w = max(self.attn_res_attn.window_size, self.attn_res_mlp.window_size)
         if len(sources) > w:
-            sources = [s.detach() for s in sources[:-w]] + list(sources[-w:])
+            sources = list(sources[-w:])
 
         return sources, v_mlp
 

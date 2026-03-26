@@ -32,7 +32,7 @@ data:
   val_ratio: 0.05
   test_ratio: 0.05
   cp_scale: 1000.0            # Reference uses tanh(cp/1000)
-  batch_size: 4096             # Window AttnRes (W=3) still needs more VRAM than base ViT
+  batch_size: 8192             # Truncated window (W=3) — old sources freed from GPU
   num_workers: 8               # Match SLURM --cpus-per-task=8
 
 model:
