@@ -1,13 +1,18 @@
 from __future__ import annotations
 """ViT with Attention Residuals for chess position evaluation.
 
-Applies the core insight from "Attention Residuals" (Kimi Team, 2025):
+Applies insights from "Attention Residuals" (Kimi Team, 2025):
 replace fixed residual accumulation with depth-wise softmax selection.
 Each sublayer (attention and MLP) receives a learned weighted mixture
-of all previous sublayer outputs, rather than the running sum.
+of recent sublayer outputs, rather than the running sum.
+
+Uses a *windowed* variant (window_size=3) instead of full AttnRes to
+bound GPU memory: each sublayer only looks at the last W depth sources.
+Sources outside the window are detached from the computation graph so
+autograd does not keep the entire chain alive.
 
 Key changes from base ChessViT:
-  1. Full AttnRes: depth-wise softmax retrieval over all prior sublayer outputs
+  1. Windowed AttnRes: depth-wise softmax retrieval over W recent outputs
   2. Per-sublayer pseudo-query (zero-init) + RMSNorm on depth keys
   3. SwiGLU FFN (replaces GELU FFN for better parameter efficiency)
   4. RMSNorm instead of LayerNorm (matches paper's normalization)
@@ -18,7 +23,7 @@ Architecture:
   → Dropout → Dense(1) → tanh
 
 Each block has 2 sublayers = 2 AttnRes mixing points.
-With L blocks, there are 2L+1 depth sources (embedding + 2 per block).
+With L blocks and window W=3, memory scales with W, not with L.
 """
 
 import math
@@ -46,19 +51,25 @@ class RMSNorm(nn.Module):
 
 
 class DepthAttnRes(nn.Module):
-    """Full Attention Residual mixer over depth sources.
+    """Windowed Attention Residual mixer over depth sources.
 
-    For each sublayer, computes a softmax-weighted mixture of all previous
-    depth sources. Uses a learned pseudo-query (not input-dependent) and
-    RMSNorm on keys before scoring — following the paper's main design.
+    Inspired by "Attention Residuals" (Kimi Team, 2025), but uses a sliding
+    window of the W most recent depth sources instead of all previous ones.
+    This bounds the memory footprint regardless of model depth while still
+    providing the key benefit: learned, weighted mixing of recent sublayer
+    outputs rather than a fixed running sum.
+
+    With window_size=3, each sublayer mixes its immediate predecessor plus
+    2 earlier sources — enough to skip layers and route information.
 
     The pseudo-query is zero-initialized so training starts with uniform
     mixing (equivalent to averaged residual), avoiding instability.
     """
 
-    def __init__(self, dim: int):
+    def __init__(self, dim: int, window_size: int = 3):
         super().__init__()
         self.dim = dim
+        self.window_size = window_size
         # Learned pseudo-query: one vector per sublayer instance
         # Zero-init → uniform attention at start (paper Section 3)
         self.query = nn.Parameter(torch.zeros(dim))
@@ -66,40 +77,37 @@ class DepthAttnRes(nn.Module):
         self.key_norm = RMSNorm(dim)
 
     def forward(self, sources: list[torch.Tensor]) -> torch.Tensor:
-        """Mix depth sources via softmax attention.
+        """Mix depth sources via softmax attention (windowed).
 
         Args:
             sources: List of S tensors, each (B, T, D), representing
                      previous sublayer outputs (and the initial embedding).
+                     Only the last ``window_size`` sources are used.
 
         Returns:
             Weighted mixture (B, T, D).
         """
-        if len(sources) == 1:
-            return sources[0]
+        # Take only the last W sources
+        window = sources[-self.window_size:]
 
-        # Compute scores without stacking all sources into one huge tensor.
-        # This avoids allocating an (S, B, T, D) intermediate.
-        # query: (D,)
-        q = self.query
+        if len(window) == 1:
+            return window[0]
 
-        # Compute per-source logits: list of (B, T) tensors
-        logits = []
-        for src in sources:
-            # RMSNorm → dot with query → scalar per token
-            normed = self.key_norm(src)                     # (B, T, D)
-            s = (normed * q).sum(dim=-1)                    # (B, T)
-            logits.append(s)
+        # Stack the small window: (W, B, T, D) — at most 3 tensors
+        stacked = torch.stack(window, dim=0)
 
-        # Stack logits only (much smaller than full sources): (S, B, T)
-        logits_stacked = torch.stack(logits, dim=0)
-        weights = F.softmax(logits_stacked, dim=0)          # (S, B, T)
+        # Normalize keys for scoring: (W, B, T, D)
+        keys_normed = self.key_norm(stacked)
 
-        # Weighted sum over sources
-        result = torch.zeros_like(sources[0])               # (B, T, D)
-        for i, src in enumerate(sources):
-            result = result + weights[i].unsqueeze(-1) * src
-        return result
+        # Score: dot product of pseudo-query with each normalized source
+        # query: (D,) → broadcasts to (W, B, T, D) → sum → (W, B, T)
+        scores = (keys_normed * self.query).sum(dim=-1)
+
+        # Softmax over depth axis, per token position
+        weights = F.softmax(scores, dim=0).unsqueeze(-1)   # (W, B, T, 1)
+
+        # Weighted sum: (W, B, T, D) * (W, B, T, 1) → (B, T, D)
+        return (stacked * weights).sum(dim=0)
 
 
 class SwiGLUFFN(nn.Module):
@@ -171,6 +179,7 @@ class AttnResTransformerBlock(nn.Module):
         Returns:
             Tuple of (updated_sources, output_tensor).
             updated_sources has 2 new entries appended (attn output, mlp output).
+            Sources beyond the window are detached to bound autograd memory.
         """
         # --- Attention sublayer ---
         # Mix depth sources to get input for attention
@@ -189,6 +198,15 @@ class AttnResTransformerBlock(nn.Module):
         mlp_out = self.mlp(self.norm_mlp(h_mlp))
         v_mlp = h_mlp + mlp_out
         sources = sources + [v_mlp]
+
+        # Detach sources that are now outside both windows to free autograd memory.
+        # The maximum window_size used by the *next* block's AttnRes mixers
+        # determines how many recent sources need gradients.
+        # With window_size=3, we keep the last 3 with gradients,
+        # and detach everything older.
+        w = max(self.attn_res_attn.window_size, self.attn_res_mlp.window_size)
+        if len(sources) > w:
+            sources = [s.detach() for s in sources[:-w]] + list(sources[-w:])
 
         return sources, v_mlp
 

@@ -1,17 +1,17 @@
 # ──────────────────────────────────────────────
-# ViT-S + AttnRes — Attention Residuals experiment
+# ViT-S + AttnRes — Windowed Attention Residuals experiment
 # Vision Transformer with depth-wise softmax retrieval
 # ──────────────────────────────────────────────
-# Based on "Attention Residuals" (Kimi Team, 2025).
-# Replaces standard residual connections with Full AttnRes:
-# each sublayer receives a softmax-weighted mixture of all
-# previous sublayer outputs, using a learned pseudo-query
-# and RMSNorm on depth keys.
+# Inspired by "Attention Residuals" (Kimi Team, 2025).
+# Uses Windowed AttnRes (W=3): each sublayer receives a
+# softmax-weighted mixture of the last W sublayer outputs,
+# using a learned pseudo-query and RMSNorm on depth keys.
+# Sources outside the window are detached from autograd.
 #
 # Additional improvements over base ViT-S v2:
 #   - SwiGLU FFN (replaces GELU, better parameter efficiency)
 #   - RMSNorm (replaces LayerNorm, lighter)
-#   - Per-sublayer depth mixing (10 AttnRes points for 5 blocks)
+#   - Per-sublayer depth mixing with W=3 window
 #
 # GPU: NVIDIA A100 (40/80 GB VRAM)
 
@@ -32,7 +32,7 @@ data:
   val_ratio: 0.05
   test_ratio: 0.05
   cp_scale: 1000.0            # Reference uses tanh(cp/1000)
-  batch_size: 4096             # Reduced from 8192 — AttnRes stores 11 depth sources
+  batch_size: 8192             # Windowed AttnRes (W=3) fits in 40GB at this batch size
   num_workers: 8               # Match SLURM --cpus-per-task=8
 
 model:
