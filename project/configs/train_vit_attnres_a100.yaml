@@ -1,0 +1,67 @@
+# ──────────────────────────────────────────────
+# ViT-S + AttnRes — Attention Residuals experiment
+# Vision Transformer with depth-wise softmax retrieval
+# ──────────────────────────────────────────────
+# Based on "Attention Residuals" (Kimi Team, 2025).
+# Replaces standard residual connections with Full AttnRes:
+# each sublayer receives a softmax-weighted mixture of all
+# previous sublayer outputs, using a learned pseudo-query
+# and RMSNorm on depth keys.
+#
+# Additional improvements over base ViT-S v2:
+#   - SwiGLU FFN (replaces GELU, better parameter efficiency)
+#   - RMSNorm (replaces LayerNorm, lighter)
+#   - Per-sublayer depth mixing (10 AttnRes points for 5 blocks)
+#
+# GPU: NVIDIA A100 (40/80 GB VRAM)
+
+experiment:
+  name: "vit-s-attnres"
+  seed: 42
+
+wandb:
+  enabled: true
+  project: "bdh-searchless-chess"
+  tags: ["vit", "attnres", "a100", "50M", "score-fix", "depth-mixing", "swiglu"]
+
+data:
+  hf_dataset: "mateuszgrzyb/lichess-stockfish-normalized"
+  output_dir: "/net/tscratch/people/plgantoniczapski/bdh-chess-data-v2"
+  num_samples: 50000000       # 50M positions
+  train_ratio: 0.90
+  val_ratio: 0.05
+  test_ratio: 0.05
+  cp_scale: 1000.0            # Reference uses tanh(cp/1000)
+  batch_size: 8192             # Same as ViT-S v2 — fits A100 40GB
+  num_workers: 8               # Match SLURM --cpus-per-task=8
+
+model:
+  architecture: "vit_attnres"
+  projection_dim: 256          # Same dim as ViT-S v2
+  num_heads: 4                 # Same heads as ViT-S v2
+  transformer_layers: 5        # Same depth — 10 sublayers, 11 depth sources
+  ffn_ratio: 2                 # SwiGLU with 2/3 adjustment → ~same param count
+  dropout_rate: 0.1
+
+training:
+  epochs: 40                   # 36h budget allows ~36+ epochs at ~34 min/epoch
+  learning_rate: 0.0002        # Same as ViT-S v2
+  min_learning_rate: 0.000001  # 1e-6
+  weight_decay: 0.0001         # 1e-4
+  clipnorm: 1.0
+  mixed_precision: true
+  amp_dtype: bf16
+  warmup_epochs: 5
+  save_every_epochs: 2
+  compile:
+    enabled: false
+    mode: "default"
+  early_stopping:
+    patience: 12
+    min_delta: 0.00001
+
+output:
+  dir: "/net/tscratch/people/plgantoniczapski/bdh-chess-outputs/vit-s-attnres"
+
+evaluation:
+  puzzle_path: "data/puzzles/test_puzzles.feather"

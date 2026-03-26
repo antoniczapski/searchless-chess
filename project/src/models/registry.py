@@ -6,12 +6,14 @@ import torch.nn as nn
 from src.models.mlp import ChessMLP
 from src.models.bdh import BDHChess
 from src.models.vit import ChessViT
+from src.models.vit_attnres import ChessViTAttnRes
 
 
 MODEL_REGISTRY: dict[str, type[nn.Module]] = {
     "mlp": ChessMLP,
     "bdh": BDHChess,
     "vit": ChessViT,
+    "vit_attnres": ChessViTAttnRes,
 }
 
 
