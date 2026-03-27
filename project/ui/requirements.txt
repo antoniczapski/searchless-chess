@@ -1,0 +1,7 @@
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+torch>=2.0.0
+numpy
+python-chess>=1.9.0
+wandb>=0.16.0
+python-dotenv>=1.0.0

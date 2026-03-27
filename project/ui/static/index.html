@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Searchless Chess</title>
+
+    <!-- chessboard.js CSS -->
+    <link rel="stylesheet"
+          href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- ================= TOP BAR: Model Selection ================= -->
+    <header id="top-bar">
+        <div class="top-bar-left">
+            <h1>♟ Searchless Chess</h1>
+        </div>
+        <div class="top-bar-center">
+            <div class="model-controls">
+                <div class="input-group">
+                    <label for="wandb-project">W&amp;B Project</label>
+                    <input id="wandb-project" type="text" value="bdh-searchless-chess" placeholder="project name">
+                </div>
+                <div class="input-group">
+                    <label for="wandb-entity">Entity <span class="optional">(optional)</span></label>
+                    <input id="wandb-entity" type="text" placeholder="entity/org">
+                </div>
+                <button id="btn-fetch-models" class="btn btn-secondary">Fetch Models</button>
+                <div class="input-group">
+                    <label for="select-artifact">Model Artifact</label>
+                    <select id="select-artifact" disabled>
+                        <option value="">— fetch models first —</option>
+                    </select>
+                </div>
+                <button id="btn-load-model" class="btn btn-primary" disabled>Load Weights</button>
+            </div>
+            <div class="progress-container" id="progress-container" style="display:none">
+                <div class="progress-bar" id="progress-bar"></div>
+                <span class="progress-text" id="progress-text"></span>
+            </div>
+            <div class="local-load">
+                <div class="input-group">
+                    <label for="local-path">Or local .pt path</label>
+                    <input id="local-path" type="text" placeholder="/path/to/checkpoint.pt">
+                </div>
+                <button id="btn-load-local" class="btn btn-secondary">Load Local</button>
+            </div>
+        </div>
+        <div class="top-bar-right">
+            <div id="model-status" class="status-badge status-none">No model</div>
+        </div>
+    </header>
+
+    <!-- ================= MAIN AREA ================= -->
+    <main id="main-area">
+        <!-- Eval Bar -->
+        <div id="eval-bar-container">
+            <div id="eval-bar">
+                <div id="eval-bar-white"></div>
+            </div>
+            <div id="eval-text">0.00</div>
+            <div id="eval-cp">0 cp</div>
+        </div>
+
+        <!-- Chess Board -->
+        <div id="board-wrapper">
+            <div id="board" style="width: 560px"></div>
+            <div id="game-overlay" style="display:none">
+                <div id="overlay-message"></div>
+                <button id="btn-overlay-new" class="btn btn-primary">New Game</button>
+            </div>
+            <div id="thinking-indicator" style="display:none">
+                <div class="spinner"></div>
+                <span>AI is thinking...</span>
+            </div>
+        </div>
+
+        <!-- Side Panel -->
+        <div id="side-panel">
+            <div class="panel-section">
+                <h3>Move History</h3>
+                <div id="move-history"></div>
+            </div>
+            <div class="panel-section">
+                <h3>AI Move Analysis</h3>
+                <div id="ai-analysis">
+                    <p class="muted">Make a move to see AI analysis</p>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- ================= BOTTOM CONTROLS ================= -->
+    <footer id="controls-bar">
+        <div class="controls-left">
+            <button id="btn-new-game" class="btn btn-primary">New Game</button>
+            <button id="btn-undo" class="btn btn-secondary">↩ Undo</button>
+            <button id="btn-flip" class="btn btn-secondary">⟳ Flip Board</button>
+        </div>
+        <div class="controls-center">
+            <div class="control-group">
+                <label>Play as</label>
+                <div class="toggle-group">
+                    <button id="btn-play-white" class="btn btn-toggle active">White</button>
+                    <button id="btn-play-black" class="btn btn-toggle">Black</button>
+                </div>
+            </div>
+        </div>
+        <div class="controls-right">
+            <div class="control-group">
+                <label for="slider-topk">Top-K: <span id="topk-value">5</span></label>
+                <input id="slider-topk" type="range" min="1" max="20" value="5">
+            </div>
+            <div class="control-group">
+                <label for="slider-temp">Temperature: <span id="temp-value">1.0</span></label>
+                <input id="slider-temp" type="range" min="0" max="3" step="0.1" value="1.0">
+            </div>
+        </div>
+    </footer>
+
+    <!-- No-model overlay -->
+    <div id="no-model-overlay">
+        <div class="overlay-content">
+            <h2>Load a Model to Start Playing</h2>
+            <p>Fetch models from W&amp;B or provide a local checkpoint path above.</p>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
