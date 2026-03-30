@@ -1,0 +1,46 @@
+# ──────────────────────────────────────────────
+# Smoke test config — MLP baseline (tiny, CPU)
+# ──────────────────────────────────────────────
+
+experiment:
+  name: "mlp-smoke"
+  seed: 42
+
+wandb:
+  enabled: false
+
+data:
+  hf_dataset: "mateuszgrzyb/lichess-stockfish-normalized"
+  output_dir: "data/processed"
+  num_samples: 1000
+  train_ratio: 0.80
+  val_ratio: 0.10
+  test_ratio: 0.10
+  cp_scale: 1000.0
+  batch_size: 16
+  num_workers: 0
+
+model:
+  architecture: "mlp"
+  hidden_dim: 32
+  num_layers: 1
+  dropout: 0.0
+
+training:
+  epochs: 2
+  learning_rate: 0.001
+  min_learning_rate: 0.0001
+  weight_decay: 0.0
+  clipnorm: 1.0
+  mixed_precision: false
+  warmup_epochs: 0
+  save_every_epochs: 1
+  early_stopping:
+    patience: 5
+    min_delta: 0.0
+
+output:
+  dir: "outputs/smoke"
+
+evaluation:
+  puzzle_path: "data/puzzles/test_puzzles.feather"

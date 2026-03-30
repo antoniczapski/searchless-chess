@@ -12,7 +12,7 @@ class TestFenToTensor:
     def test_starting_position_shape(self):
         tensor = fen_to_tensor("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
         assert tensor.shape == (8, 8, 12)
-        assert tensor.dtype == np.float32
+        assert tensor.dtype == np.uint8
 
     def test_starting_position_white_pieces(self):
         tensor = fen_to_tensor("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")

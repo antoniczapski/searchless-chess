@@ -21,21 +21,27 @@ env/
 .env
 
 # ──────────────────────────────────────────────
+# UV — uv.lock is committed; .venv is not
+# ──────────────────────────────────────────────
+
+# ──────────────────────────────────────────────
 # Training data (large — regenerated via scripts)
 # ──────────────────────────────────────────────
-project/data/processed/
+data/processed/
 *.npz
+*.npy
 
 # ──────────────────────────────────────────────
 # Model checkpoints & training outputs
 # ──────────────────────────────────────────────
-project/outputs/
+outputs/
+checkpoints/
 *.pt
 *.pth
 *.onnx
 
 # ──────────────────────────────────────────────
-# Reference repository clones (re-clone if needed)
+# Reference repository clones
 # ──────────────────────────────────────────────
 searchless_chess_repo_clone/
 bdh_implementation_repo_clone/
@@ -55,11 +61,13 @@ bdh_implementation_repo_clone/
 .ipynb_checkpoints/
 
 # ──────────────────────────────────────────────
-# pytest / coverage
+# pytest / coverage / linting
 # ──────────────────────────────────────────────
 .pytest_cache/
 .coverage
 htmlcov/
+.mypy_cache/
+.ruff_cache/
 
 # ──────────────────────────────────────────────
 # OS
@@ -87,12 +95,14 @@ wandb/
 *.fdb_latexmk
 
 # ──────────────────────────────────────────────
+# SLURM logs & job outputs
+# ──────────────────────────────────────────────
+logs/
+slurm-*.out
+
+# ──────────────────────────────────────────────
 # Misc
 # ──────────────────────────────────────────────
 *.log
-.env
-
-# ──────────────────────────────────────────────
-# SLURM logs
-# ──────────────────────────────────────────────
-project/logs/
+project_completion_requirements.md
+VM.md
