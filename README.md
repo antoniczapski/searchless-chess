@@ -49,12 +49,12 @@ searchless-chess/
 git clone <repo-url> && cd searchless-chess
 
 # Install all dependencies
-uv sync --all-groups
+uv sync --all-extras
 
-# Or install specific groups
+# Or install specific extras
 uv sync                     # core only
-uv sync --group train       # + pytorch-lightning, wandb
-uv sync --group dev         # + pytest, ruff
+uv sync --extra train       # + pytorch-lightning, wandb
+uv sync --extra dev         # + pytest, ruff
 ```
 
 ### HPC Notes (Ares / plgrid)
